@@ -16,6 +16,68 @@ var stripeElements = function(publicKey, setupIntent) {
     }
   };
 
+	/* -- */
+	var paymentRequest = stripe.paymentRequest({
+  	country: 'US',
+  	currency: 'usd',
+		displayItems : [
+			{
+				amount : 9999,
+				label: 'Cool stuff',
+				pending: true,
+			},
+			{
+				amount : -9999,
+				label: 'Cool discount',
+				pending: true,
+			},
+		],
+  	total: {
+    	label: 'Demo charge ya later',
+    	amount: 0,
+			pending: true
+  	},
+  	requestPayerName: true,
+  	requestPayerEmail: true,
+	});
+
+	var elements = stripe.elements();
+	var prButton = elements.create('paymentRequestButton', {
+  	paymentRequest: paymentRequest,
+	});
+
+	// Check the availability of the Payment Request API first.
+	paymentRequest.canMakePayment().then(function(result) {
+  	if (result) {
+    	prButton.mount('#preq')
+  	} else {
+    	document.getElementById('preq').style.display = 'none';
+  	}
+	});
+	paymentRequest.on('paymentmethod', function(ev) {
+  	// Confirm the PaymentIntent without handling potential next actions (yet).
+  	stripe.confirmSetupIntent(
+    	setupIntent.client_secret,
+    	{payment_method: ev.paymentMethod.id},
+    	{handleActions: false}
+  	).then(function(confirmResult) {
+    	if (confirmResult.error) {
+      	// Report to the browser that the payment failed, prompting it to
+      	// re-show the payment interface, or show an error message and close
+      	// the payment interface.
+				console.log("oh no " + error);
+      	ev.complete('fail');
+    	} else {
+      	// Report to the browser that the confirmation was successful, prompting
+      	// it to close the browser payment method collection interface.
+      	ev.complete('success');
+     		});
+    	}
+  	});
+	});
+	/* -- */
+	
+
   var card = elements.create("card", { style: style });
 
   card.mount("#card-element");
