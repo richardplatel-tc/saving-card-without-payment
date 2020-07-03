@@ -12,7 +12,7 @@ var handle_click = function () {
 		console.log(response);
 		$("#result")
 			.append($("<pre></pre>")
-				.text(JSON.stringify(response))
+				.text(JSON.stringify(response, null, '\t'))
 			)
 			.show(); /* TODO Stringify that JSON*/
 	});
@@ -32,10 +32,12 @@ var getCustomers = function() {
 			var container = $('#customers');
 			$.each(response, function(c, b)
 			{
+				var info = [b.name, b.email, b.address, b.number, b.type, b.exp].join(' | ');
+				console.log(b);
 				container.append(
 					$('<div></div>')
 					.attr('id', c)
-					.text(c)
+					.text(info)
 					.append(
 						$('<button></button>')
 							.html("Charge Customer")

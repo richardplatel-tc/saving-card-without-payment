@@ -1,4 +1,4 @@
-var stripeElements = function(publicKey, setupIntent) {
+var stripeElements = function(publicKey, setupIntentSecret) {
   var stripe = Stripe(publicKey);
   var elements = stripe.elements();
 
@@ -57,7 +57,7 @@ var stripeElements = function(publicKey, setupIntent) {
 	paymentRequest.on('paymentmethod', function(ev) {
   	// Confirm the PaymentIntent without handling potential next actions (yet).
   	stripe.confirmSetupIntent(
-    	setupIntent.client_secret,
+    	setupIntentSecret,
     	{payment_method: ev.paymentMethod.id},
     	{handleActions: false}
   	).then(function(confirmResult) {
@@ -65,15 +65,14 @@ var stripeElements = function(publicKey, setupIntent) {
       	// Report to the browser that the payment failed, prompting it to
       	// re-show the payment interface, or show an error message and close
       	// the payment interface.
-				console.log("oh no " + error);
       	ev.complete('fail');
     	} else {
       	// Report to the browser that the confirmation was successful, prompting
       	// it to close the browser payment method collection interface.
+        orderComplete(stripe, setupIntentSecret);
       	ev.complete('success');
-     		});
-    	}
-  	});
+     		};
+    	});
 	});
 	/* -- */
 	
@@ -98,13 +97,17 @@ var stripeElements = function(publicKey, setupIntent) {
   button.addEventListener("click", function(event) {
     event.preventDefault();
     changeLoadingState(true);
+    var name = document.getElementById("name").value;
     var email = document.getElementById("email").value;
 
     stripe
-      .confirmCardSetup(setupIntent.client_secret, {
+      .confirmCardSetup(setupIntentSecret, {
         payment_method: {
           card: card,
-          billing_details: { email: email }
+          billing_details: { 
+						email: email,
+						name: name,
+					}
         }
       })
       .then(function(result) {
@@ -114,13 +117,13 @@ var stripeElements = function(publicKey, setupIntent) {
           displayError.textContent = result.error.message;
         } else {
           // The PaymentMethod was successfully set up
-          orderComplete(stripe, setupIntent.client_secret);
+          orderComplete(stripe, setupIntentSecret);
         }
       });
   });
 };
 
-var getSetupIntent = function(publicKey) {
+var getSetupIntent = function() {
   return fetch("/create-setup-intent", {
     method: "post",
     headers: {
@@ -130,23 +133,10 @@ var getSetupIntent = function(publicKey) {
     .then(function(response) {
       return response.json();
     })
-    .then(function(setupIntent) {
-      stripeElements(publicKey, setupIntent);
-    });
-};
-
-var getPublicKey = function() {
-  return fetch("/public-key", {
-    method: "get",
-    headers: {
-      "Content-Type": "application/json"
-    }
-  })
-    .then(function(response) {
-      return response.json();
-    })
-    .then(function(response) {
-      getSetupIntent(response.publicKey);
+    .then(function(setupIntentResponse) {
+      stripeElements(
+				setupIntentResponse.stripe_publishable_key, 
+				setupIntentResponse.stripe_client_secret);
     });
 };
 
@@ -180,4 +170,4 @@ var orderComplete = function(stripe, clientSecret) {
   });
 };
 
-getPublicKey();
+getSetupIntent();

@@ -2,11 +2,11 @@
 
 """
 server.py
-Stripe Recipe.
+SSVC-Payments setupintent demo
 Python 3.6 or newer required.
 """
 
-import stripe
+import requests
 import json
 import os
 
@@ -15,16 +15,39 @@ from dotenv import load_dotenv, find_dotenv
 
 from uuid import uuid4 as uuid
 from traceback import format_exc
+from time import time
 
-# Setup Stripe python client library
 load_dotenv(find_dotenv())
-stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
-stripe.api_version = os.getenv('STRIPE_API_VERSION')
 
 static_dir = str(os.path.abspath(os.path.join(
     __file__, "..", os.getenv("STATIC_DIR"))))
+ssvc_url = os.getenv("SSVC_PAYMENTS_URL")
+ssvc_auth = os.getenv("SSVC_AUTH_KEY")
+
 app = Flask(__name__, static_folder=static_dir,
             static_url_path="", template_folder=static_dir)
+
+def ssvc_get(url, *args, **kwargs):
+    headers = kwargs.pop('headers', {})
+    headers.setdefault("x-srs-auth-api-key", ssvc_auth)
+    u = '{}{}'.format(ssvc_url, url)
+    return requests.get(
+        u,
+        *args,
+        headers=headers,
+        **kwargs)
+
+def ssvc_post(url, *args, **kwargs):
+    headers = kwargs.pop('headers', {})
+    headers.setdefault("x-srs-auth-api-key", ssvc_auth)
+    headers.setdefault("Content-Type", "application/json")
+    u = '{}{}'.format(ssvc_url, url)
+    return requests.post(
+        u,
+        *args,
+        headers=headers,
+        **kwargs)
+
 
 _datastore='vault.json'
 def read_store():
@@ -46,53 +69,66 @@ def get_customer(cid):
     s = read_store()
     return s[cid]
 
+def fetch_customer_details(cid, vault_id):
+    # Note these are old API methods that work with vault ids, nothing 
+    # new for setupintents.
+    r = ssvc_get('vault/items/{}'.format(vault_id))
+
+    # ignore 404s, these are setupintents that were never confirmed, see note
+    # in create_setup_intent()
+    if r.ok:
+        cc = r.json()['object_data']['credit_card']
+        return {
+            'name' : cc['contact']['billing']['first_name'] + cc['contact']['billing']['last_name'],
+            'email' : cc['contact']['billing']['email'],
+            'address' : cc['contact']['billing']['address'],
+            'type' : cc['type'],
+            'number' : cc['number'],
+            'exp' : '{}/{}'.format(cc['month'], cc['year']),
+            }
+    else:
+        return None
+
 @app.route('/customers')
 def list_customers():
-    return jsonify({c : 'payment_method' in v for c,v in read_store().items()})
+    ret = dict()
+    for c,v in read_store().items():
+        d = fetch_customer_details(c, v['vault_item_id'])
+        if d: ret[c] = d
+    return jsonify(ret)
 
 @app.route('/customers/<cid>/charge', methods=['POST'])
 def charge_customer(cid):
-    class NoError(Exception): #woof!
-        pass
-    ret = dict()
-    ret['status'] = []
-    try:
-        c = get_customer(cid)
-        ret['status'].append(f'Found customer {cid}')
-        if 'payment_method' not in c:
-            ret['status'].append(f'No PaymentMethod stored locally, querying Stripe')
-            pms = stripe.PaymentMethod.list(
-                customer=c['stripe_customer'],
-                type="card",
-            )
-            if pms and 'data' in pms and len(pms['data']):
-                c['payment_method'] = pms['data'][0]['id']
-                save_customer(c)
-                ret['status'].append(f'Found PaymentMethod {c["payment_method"]} in Stripe, saved locally')
-            else:
-                ret['status'].append(f'No PaymentMethods for customer')
-                raise NoError()
-        else:
-            ret['status'].append('Client has a PaymentMethod stored locally')
+    c = get_customer(cid)
+    vid = c['vault_item_id']
+    req_cust = {
+        "id": "12354", 
+        "ip_address": "44.22.14.65"
+    }
+    req_tx = {
+        "type" : "CHARGE",
+        "order_id" : str(int(time())),
+        "currency": "USD",
+        "descriptor" : "ABC 123",
+        "amount" : 2323,
+    }
+    req_vi = {
+        "id" : vid,
+        "contact" : {
+            "shipping" : {}
+        }
+    }
+        
 
-        # Charge that cust!
-        pm = c['payment_method']
-        ret['status'].append(f'Creating PaymentIntent with method {pm}')
-        pm = stripe.PaymentIntent.create(
-            amount=1099,
-            currency='usd',
-            customer=c['stripe_customer'],
-            payment_method=pm,
-            off_session=True,
-            confirm=True,
-        )
-        ret['status'].append(f'Created PaymentIntent {pm["id"]} status {pm["status"]}')
+    r = ssvc_post('payments',
+        data = json.dumps({
+            "vault_item" : req_vi,
+            "transaction" : req_tx,
+            "customer" : req_cust,
+        }),
+    )
 
-    except Exception as e:
-        if  type(e) is not NoError: 
-            ret['exception'] = format_exc() 
-    finally:
-        return jsonify(ret)
+    return jsonify(r.json())
         
 
 @app.route('/', methods=['GET'])
@@ -100,77 +136,20 @@ def get_setup_intent_page():
     return render_template('index.html')
 
 
-@app.route('/public-key', methods=['GET'])
-def get_publishable_key():
-    return jsonify(publicKey=os.getenv('STRIPE_PUBLISHABLE_KEY'))
-
-
 @app.route('/create-setup-intent', methods=['POST'])
 def create_setup_intent():
-    # Create or use an existing Customer to associate with the SetupIntent.
-    # The PaymentMethod will be stored to this Customer for later use.
-    customer = stripe.Customer.create()
 
-    setup_intent = stripe.SetupIntent.create(
-        customer=customer['id']
+    r = ssvc_post(
+        "setup",
+        data = json.dumps({}),
     )
+    setup_intent = r.json()['object_data']['processor_fields']
+    # for demo save every vault_id we get, in reality it only makes sense
+    # to save the vault id if/when the end-user-device confirms a payment method
     save_customer({
-        'stripe_customer' : customer['id'],
-        'stripe_setup_intent' : setup_intent['id'],
+        'vault_item_id' : r.json()['object_data']['vault_item_id']
     })
-    
     return jsonify(setup_intent)
-
-
-@app.route('/webhook', methods=['POST'])
-def webhook_received():
-    # You can use webhooks to receive information about asynchronous payment events.
-    # For more about our webhook events check out https://stripe.com/docs/webhooks.
-    webhook_secret = os.getenv('STRIPE_WEBHOOK_SECRET')
-    request_data = json.loads(request.data)
-
-    if webhook_secret:
-        # Retrieve the event by verifying the signature using the raw body and secret if webhook signing is configured.
-        signature = request.headers.get('stripe-signature')
-        try:
-            event = stripe.Webhook.construct_event(
-                payload=request.data, sig_header=signature, secret=webhook_secret)
-            data = event['data']
-        except Exception as e:
-            return e
-        # Get the type of webhook event sent - used to check the status of PaymentIntents.
-        event_type = event['type']
-    else:
-        data = request_data['data']
-        event_type = request_data['type']
-    data_object = data['object']
-
-    if event_type == 'setup_intent.created':
-        print('🔔 A new SetupIntent was created.')
-
-    if event_type == 'setup_intent.succeeded':
-        print(
-            '🔔 A SetupIntent has successfully set up a PaymentMethod for future use.')
-    
-    if event_type == 'payment_method.attached':
-        print('🔔 A PaymentMethod has successfully been saved to a Customer.')
-
-        # At this point, associate the ID of the Customer object with your
-        # own internal representation of a customer, if you have one.
-
-        # Optional: update the Customer billing information with billing details from the PaymentMethod
-        stripe.Customer.modify(
-            data_object['customer'],
-            email=data_object['billing_details']['email']
-        )
-        print('🔔 Customer successfully updated.')
-
-    if event_type == 'setup_intent.setup_failed':
-        print(
-            '🔔 A SetupIntent has failed the attempt to set up a PaymentMethod.')
-
-    return jsonify({'status': 'success'})
-
 
 if __name__ == '__main__':
     app.run(host="localhost", port=4242, debug=True)
